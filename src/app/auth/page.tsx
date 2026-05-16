@@ -7,6 +7,7 @@ import { authSchema, normalizePhoneNumber } from "@/lib/utils/phone";
 import { auth } from "@/lib/firebase";
 import { signInWithPopup, GoogleAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
 import { ShieldCheck, Smartphone, Lock, Eye, EyeOff } from 'lucide-react';
+import { setSession } from '@/lib/auth-utils';
 
 export default function AuthPage() {
     const [isSignup, setIsSignup] = useState(false);
@@ -22,6 +23,10 @@ export default function AuthPage() {
         const normalizedPhone = normalizePhoneNumber(data.phone);
         // Sophisticated Hack: Using phone as email to allow Phone+Password in Firebase
         const pseudoEmail = `${normalizedPhone.replace('+', '')}@pay4pawa.auth`;
+        const userCredential = await signInWithEmailAndPassword(auth, pseudoEmail, data.password);
+        const token = await userCredential.user.getIdToken();
+        setSession(token); // Set the bouncer's pass
+        window.location.href = "/dashboard";
 
         try {
             if (isSignup) {
