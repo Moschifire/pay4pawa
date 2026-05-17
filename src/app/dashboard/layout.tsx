@@ -11,18 +11,34 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const router = useRouter();
 
     useEffect(() => {
-        // Auth Observer: Watch for logout events
-        const unsubscribe = onAuthStateChanged(auth, (user) => {
+        const unsubscribe = auth.onAuthStateChanged((user) => {
             if (!user) {
+                // If Firebase says we are logged out, make sure the cookie is gone
                 clearSession();
-                router.push('/auth');
+                // Only redirect if we aren't already on the auth page
+                if (!window.location.pathname.startsWith('/auth')) {
+                    window.location.href = "/auth";
+                }
             }
         });
         return () => unsubscribe();
-    }, [router]);
+    }, []);
 
     const handleLogout = async () => {
-        await auth.signOut();
+        try {
+            // A. Sign out from Firebase
+            await auth.signOut();
+
+            // B. Delete the 'auth-token' cookie
+            clearSession();
+
+            // C. Force redirect to the Auth page
+            // We use window.location.href instead of router.push for a "hard" reset
+            window.location.href = "/auth";
+
+        } catch (error) {
+            console.error("Logout failed:", error);
+        }
     };
 
     return (

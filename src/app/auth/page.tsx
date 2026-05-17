@@ -3,10 +3,25 @@
 import React, { useState } from 'react';
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { authSchema, normalizePhoneNumber } from "@/lib/utils/phone";
-import { auth } from "@/lib/firebase";
-import { signInWithPopup, GoogleAuthProvider, createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
-import { Smartphone, Lock, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import { authSchema, normalizePhoneNumber, nigerianPhoneRegex } from "@/lib/utils/phone"; // Added nigerianPhoneRegex
+import { auth, db } from "@/lib/firebase";
+import {
+    createUserWithEmailAndPassword,
+    signInWithEmailAndPassword,
+    updateProfile,
+    sendEmailVerification,
+    GoogleAuthProvider,
+    signInWithPopup
+} from "firebase/auth";
+import {
+    doc,
+    setDoc,
+    query,
+    where,
+    getDocs,
+    collection
+} from "firebase/firestore"; // Added doc, setDoc, query, where, getDocs, collection
+import { Smartphone, Lock, Eye, EyeOff, RefreshCw, Mail, User } from 'lucide-react';
 import { setSession } from '@/lib/auth-utils';
 
 export default function AuthPage() {
@@ -19,142 +34,207 @@ export default function AuthPage() {
     });
 
     const onSubmit = async (data: any) => {
-        setError("");
-        const normalizedPhone = normalizePhoneNumber(data.phone);
-
-        // Convert phone to the internal pseudo-email format
-        const pseudoEmail = `${normalizedPhone.replace('+', '')}@pay4pawa.auth`;
-
+        setError(""); // Clear any previous errors
         try {
             let userCredential;
 
             if (isSignup) {
-                // Create a NEW account
-                userCredential = await createUserWithEmailAndPassword(auth, pseudoEmail, data.password);
-                console.log("Account Created Successfully");
+                // --- 1. SIGN-UP LOGIC ---
+
+                // Ensure all required fields for signup are present
+                if (!data.name || !data.email || !data.phone) {
+                    setError("Please fill in all fields to create an account.");
+                    return;
+                }
+
+                // A. Create the user in Firebase Auth
+                userCredential = await createUserWithEmailAndPassword(auth, data.email, data.password);
+
+                // B. Set the User's Display Name
+                await updateProfile(userCredential.user, { displayName: data.name });
+
+                // C. Send Verification Email
+                await sendEmailVerification(userCredential.user);
+
+                // D. Save the full profile to Firestore (including phone for future dual-login)
+                const normalizedPhone = normalizePhoneNumber(data.phone);
+                await setDoc(doc(db, 'users', userCredential.user.uid), {
+                    uid: userCredential.user.uid,
+                    name: data.name,
+                    email: data.email,
+                    phone: normalizedPhone,
+                    createdAt: Date.now(),
+                });
+
+                alert("Account created! A verification email has been sent to " + data.email + ". Please verify your email before logging in.");
+
+                // Toggle UI back to login mode
+                setIsSignup(false);
+
             } else {
-                // Login to EXISTING account
-                userCredential = await signInWithEmailAndPassword(auth, pseudoEmail, data.password);
-                console.log("Logged in Successfully");
+                // --- 2. LOGIN LOGIC (Email or Phone) ---
+
+                if (!data.identifier) {
+                    setError("Please enter your Email or Phone Number.");
+                    return;
+                }
+
+                let loginEmail = data.identifier.trim();
+
+                // Check if the user entered a Nigerian Phone Number instead of an Email
+                const isPhone = nigerianPhoneRegex.test(loginEmail);
+
+                if (isPhone) {
+                    const normalized = normalizePhoneNumber(loginEmail);
+
+                    // Query Firestore to find which email is linked to this phone number
+                    const q = query(collection(db, "users"), where("phone", "==", normalized));
+                    const querySnapshot = await getDocs(q);
+
+                    if (querySnapshot.empty) {
+                        setError("No account found with this phone number. Please Sign Up.");
+                        return;
+                    }
+
+                    // Retrieve the actual email associated with the phone record
+                    loginEmail = querySnapshot.docs[0].data().email;
+                }
+
+                // Attempt login with the resolved email and password
+                userCredential = await signInWithEmailAndPassword(auth, loginEmail, data.password);
+
+                // --- 3. VERIFICATION GUARD ---
+                // Even with correct password, block access if email isn't verified
+                if (!userCredential.user.emailVerified) {
+                    setError("Please verify your email address first. Check your inbox.");
+                    await auth.signOut(); // Kick them out of the auth state
+                    return;
+                }
+
+                // SUCCESS: Setup session and enter the app
+                const token = await userCredential.user.getIdToken();
+                setSession(token);
+                window.location.href = "/dashboard";
             }
-
-            // Secure the session with the bouncer
-            const token = await userCredential.user.getIdToken();
-            setSession(token);
-
-            // Move to dashboard
-            window.location.href = "/dashboard";
-
         } catch (err: any) {
-            console.error("Firebase Auth Error Code:", err.code);
+            console.error("Auth Error Code:", err.code);
 
-            // Sophisticated error mapping
+            // Map Firebase technical errors to professional messages
             switch (err.code) {
                 case 'auth/invalid-credential':
-                    setError("Invalid phone number or password. If you're new, please click 'Sign Up' below.");
+                    setError("Invalid email/phone or password. Please try again.");
                     break;
                 case 'auth/email-already-in-use':
-                    setError("This phone number is already registered. Try logging in instead.");
+                    setError("This email is already registered. Try logging in.");
                     break;
-                case 'auth/weak-password':
-                    setError("Password is too weak. Please use at least 8 characters.");
+                case 'auth/too-many-requests':
+                    setError("Too many failed attempts. Please try again later.");
+                    break;
+                case 'auth/user-disabled':
+                    setError("This account has been disabled. Contact support.");
                     break;
                 default:
-                    setError("Authentication failed. Please check your internet and try again.");
+                    setError("Authentication failed: " + err.message);
             }
         }
     };
 
     const handleGoogleLogin = async () => {
+        setError("");
         const provider = new GoogleAuthProvider();
         try {
-            await signInWithPopup(auth, provider);
+            const result = await signInWithPopup(auth, provider);
+            const token = await result.user.getIdToken();
+            setSession(token);
             window.location.href = "/dashboard";
-        } catch (err) {
+        } catch (err: any) {
             setError("Google Login failed. Please try again.");
         }
     };
 
     return (
-        <div className="min-h-screen grid lg:grid-cols-2">
-            {/* Visual Panel */}
+        <div className="min-h-screen grid lg:grid-cols-2 bg-white">
+            {/* Left Panel - Visual (Hidden on Mobile) */}
             <div className="hidden lg:flex bg-brand-900 flex-col justify-between p-12 text-white">
                 <div>
-                    <h2 className="text-3xl font-bold">Pay4Pawa</h2>
-                    <p className="mt-4 text-brand-100 max-w-sm">
-                        Empowering Nigerians with seamless, smart electricity payments. No tokens lost, no manual typing.
+                    <h2 className="text-4xl font-bold tracking-tight">Pay4Pawa</h2>
+                    <p className="mt-4 text-brand-100 text-lg max-w-sm">
+                        Smart electricity management for modern Nigerian homes.
                     </p>
                 </div>
-                <div className="bg-brand-800/50 p-6 rounded-xl border border-brand-700">
-                    <p className="italic text-sm text-brand-200">
-                        "The first time I didn't have to walk to the meter to type a 20-digit code. Life-changing."
+                <div className="bg-brand-800/40 p-8 rounded-2xl border border-brand-700 backdrop-blur-sm">
+                    <p className="italic text-brand-100 leading-relaxed">
+                        "The fastest way to recharge my meter without ever touching the physical keypad. Pay4Pawa is a game changer for my office."
                     </p>
-                    <p className="mt-2 font-bold text-sm">— Adeola B., Lagos</p>
+                    <p className="mt-4 font-bold text-green-400">— Chidi O., Abuja</p>
                 </div>
             </div>
 
-            {/* Form Panel */}
-            <div className="flex flex-col justify-center p-8 md:p-16 bg-white min-h-screen">
+            {/* Right Panel - Form */}
+            <div className="flex flex-col justify-center p-8 md:p-16 lg:p-24 overflow-y-auto">
                 <div className="mx-auto w-full max-w-sm">
-                    <div className="mb-8">
-                        <h1 className="text-3xl font-extrabold text-gray-900">
-                            {isSignup ? "Create account" : "Welcome back"}
+                    <div className="mb-10 text-center lg:text-left">
+                        <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">
+                            {isSignup ? "Create an account" : "Welcome back"}
                         </h1>
-                        <p className="text-gray-500 mt-2">Access your Pay4Pawa dashboard</p>
+                        <p className="text-gray-500 mt-2">
+                            {isSignup ? "Join thousands of smart Nigerians." : "Enter your credentials to continue."}
+                        </p>
                     </div>
 
-                    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-                        {error && (
-                            <div className="p-3 bg-red-50 border border-red-200 text-red-600 text-sm rounded-xl">
-                                {error}
+                    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+                        {error && <div className="p-3 bg-red-50 border border-red-200 text-red-600 text-sm rounded-xl">{error}</div>}
+
+                        {/* SIGNUP ONLY: Name */}
+                        {isSignup && (
+                            <div className="space-y-1">
+                                <label className="text-xs font-bold text-gray-500 uppercase">Full Name</label>
+                                <input {...register("name")} placeholder="John Doe" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
                             </div>
                         )}
 
-                        <div className="space-y-1">
-                            <label className="text-sm font-semibold text-gray-700">Phone Number</label>
-                            <div className="relative">
-                                <Smartphone className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
-                                <input
-                                    {...register("phone")}
-                                    placeholder="08012345678"
-                                    className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-green-500 focus:bg-white outline-none transition text-gray-900"
-                                />
+                        {/* LOGIN ONLY: Email or Phone */}
+                        {!isSignup && (
+                            <div className="space-y-1">
+                                <label className="text-xs font-bold text-gray-500 uppercase">Email or Phone Number</label>
+                                <input {...register("identifier")} placeholder="email@me.com or 080..." className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
                             </div>
-                            {errors.phone && <p className="text-xs text-red-500 mt-1">{errors.phone.message as string}</p>}
+                        )}
+
+                        {/* SIGNUP ONLY: Separate Email and Phone */}
+                        {isSignup && (
+                            <>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-bold text-gray-500 uppercase">Email Address</label>
+                                    <input {...register("email")} type="email" placeholder="name@example.com" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-xs font-bold text-gray-500 uppercase">Phone Number</label>
+                                    <input {...register("phone")} placeholder="080..." className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
+                                </div>
+                            </>
+                        )}
+
+                        {/* ALWAYS: Password */}
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold text-gray-500 uppercase">Password</label>
+                            <input {...register("password")} type="password" placeholder="••••••••" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
                         </div>
 
-                        <div className="space-y-1">
-                            <label className="text-sm font-semibold text-gray-700">Password</label>
-                            <div className="relative">
-                                <Lock className="absolute left-3 top-3.5 h-5 w-5 text-gray-400" />
-                                <input
-                                    {...register("password")}
-                                    type={showPassword ? "text" : "password"}
-                                    placeholder="••••••••"
-                                    className="w-full pl-10 pr-10 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-green-500 focus:bg-white outline-none transition text-gray-900"
-                                />
-                                <button
-                                    type="button"
-                                    onClick={() => setShowPassword(!showPassword)}
-                                    className="absolute right-3 top-3.5"
-                                >
-                                    {showPassword ? <EyeOff className="h-5 w-5 text-gray-400" /> : <Eye className="h-5 w-5 text-gray-400" />}
-                                </button>
+                        {/* Debugger: This will show you why the button isn't clicking */}
+                        {Object.keys(errors).length > 0 && (
+                            <div className="p-3 bg-orange-50 border border-orange-200 text-orange-700 text-xs rounded-lg">
+                                <strong>Validation Errors:</strong>
+                                <ul className="list-disc ml-4">
+                                    {Object.values(errors).map((err: any, i) => (
+                                        <li key={i}>{err.message}</li>
+                                    ))}
+                                </ul>
                             </div>
-                            {errors.password && <p className="text-xs text-red-500 mt-1">{errors.password.message as string}</p>}
-                        </div>
+                        )}
 
-                        {/* Primary Action Button */}
-                        <button
-                            type="submit"
-                            disabled={isSubmitting}
-                            className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 rounded-xl shadow-lg shadow-green-100 transition-all transform active:scale-[0.98] disabled:opacity-70 flex justify-center items-center"
-                        >
-                            {isSubmitting ? (
-                                <RefreshCw className="animate-spin h-5 w-5" />
-                            ) : (
-                                <span>{isSignup ? "Create Account" : "Login to Dashboard"}</span>
-                            )}
+                        <button type="submit" disabled={isSubmitting} className="w-full bg-green-600 text-white font-bold py-4 rounded-xl shadow-lg">
+                            {isSubmitting ? "Processing..." : isSignup ? "Create Account" : "Login"}
                         </button>
                     </form>
 
@@ -164,7 +244,6 @@ export default function AuthPage() {
                         <div className="flex-grow border-t border-gray-100"></div>
                     </div>
 
-                    {/* Google Button */}
                     <button
                         onClick={handleGoogleLogin}
                         type="button"
@@ -180,7 +259,7 @@ export default function AuthPage() {
                             onClick={() => setIsSignup(!isSignup)}
                             className="text-green-600 font-extrabold hover:underline ml-1"
                         >
-                            {isSignup ? "Login" : "Sign Up"}
+                            {isSignup ? "Login here" : "Sign Up here"}
                         </button>
                     </p>
                 </div>
