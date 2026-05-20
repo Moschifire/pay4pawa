@@ -23,6 +23,7 @@ import {
 } from "firebase/firestore"; // Added doc, setDoc, query, where, getDocs, collection
 import { Smartphone, Lock, Eye, EyeOff, RefreshCw, Mail, User } from 'lucide-react';
 import { setSession } from '@/lib/auth-utils';
+import { sendPasswordResetEmail } from "firebase/auth";
 
 export default function AuthPage() {
     const [isSignup, setIsSignup] = useState(false);
@@ -32,6 +33,23 @@ export default function AuthPage() {
     const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm({
         resolver: zodResolver(authSchema)
     });
+
+    const handleForgotPassword = async () => {
+        // We get the identifier (email) from the form state
+        const email = (document.getElementsByName("identifier")[0] as HTMLInputElement)?.value;
+
+        if (!email || !email.includes("@")) {
+            setError("Please enter your registered email address in the field above first.");
+            return;
+        }
+
+        try {
+            await sendPasswordResetEmail(auth, email);
+            alert("Password reset link sent to " + email + ". Please check your inbox.");
+        } catch (err: any) {
+            setError("Error: " + err.message);
+        }
+    };
 
     const onSubmit = async (data: any) => {
         setError(""); // Clear any previous errors

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from 'react';
-import { RefreshCw, Zap, CreditCard } from 'lucide-react';
+import { X, RefreshCw, Zap, CreditCard } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { auth } from '@/lib/firebase';
 
@@ -41,6 +41,15 @@ export default function TopUpModal({ meter, onClose }: { meter: any, onClose: ()
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-3xl w-full max-w-md p-8 shadow-2xl">
+
+                {/* The Close Button */}
+                <button
+                    onClick={onClose}
+                    className="absolute top-6 right-6 text-gray-400 hover:text-gray-900 transition-colors p-1 hover:bg-gray-100 rounded-full"
+                >
+                    <X size={20} />
+                </button>
+
                 {!purchasedToken ? (
                     <>
                         <h2 className="text-2xl font-bold mb-2">Buy Power</h2>
