@@ -237,6 +237,18 @@ export default function AuthPage() {
                         <div className="space-y-1">
                             <label className="text-xs font-bold text-gray-500 uppercase">Password</label>
                             <input {...register("password")} type="password" placeholder="••••••••" className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
+                            <div className="flex justify-between items-center">
+                                <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Password</label>
+                                {!isSignup && (
+                                    <button
+                                        type="button"
+                                        onClick={handleForgotPassword}
+                                        className="text-[10px] font-bold text-brand-600 hover:underline uppercase tracking-tighter"
+                                    >
+                                        Forgot Password?
+                                    </button>
+                                )}
+                            </div>
                         </div>
 
                         {/* Debugger: This will show you why the button isn't clicking */}
